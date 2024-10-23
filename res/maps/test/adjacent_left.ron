@@ -1,0 +1,29 @@
+MapFile(
+    map:
+"111111111
+100000000
+100000000
+100000000
+100000000
+111111111",
+
+    key: [
+        "rust.png"
+    ],
+
+    connections: (
+        right: (
+            map: "test/adjacent_all.ron",
+            offset: (0, -2)
+        )
+    ),
+
+    cell_size: 1.0,
+    player_spawn: (1, 1),
+    floor: (122, 13, 39),
+    //ceiling: (191, 187, 181)
+    ceiling: (122, 13, 39),
+    shade_ceiling: true,
+    shade_multi: 1.0,
+    shade_walls: true
+)

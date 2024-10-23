@@ -1,0 +1,26 @@
+MapFile(
+    map:
+"10011
+10011
+10000
+10000
+11111",
+
+    key: [
+        "balcony.png"
+    ],
+
+    connections: (
+        up: ( map: "spiral/spiral1.ron", offset: (0, 0) ),
+        right: ( map: "spiral/spiral3.ron", offset: (0, 0) )
+    ),
+
+    cell_size: 1.0,
+    player_spawn: (2, 2),
+    floor: (0, 0, 0),
+    //ceiling: (191, 187, 181)
+    ceiling: (0, 0, 0),
+    shade_ceiling: true,
+    shade_multi: 1.0,
+    shade_walls: true
+)

@@ -1,0 +1,44 @@
+MapFile(
+    map: 
+"11111111000011111111111
+10000000000000000000001
+10000000000000000000001
+00000000011110000000000
+00000000011110000000000
+00000000011110000000000
+00000000011110000000000
+10000000000000000000001
+10000000000000000000001
+11111111000011111111111",
+    key: [
+        "dirt.png"
+    ],
+
+    connections: (
+        left: (
+            map: "test/adjacent_left.ron",
+            offset: (0, 2)
+        ),
+        right: (
+            map: "test/adjacent_right.ron",
+            offset: (0, 2)
+        ),
+        up: (
+            map: "test/adjacent_up.ron",
+            offset: (7, 0)
+        ),
+        down: (
+            map: "test/adjacent_down.ron",
+            offset: (7, 0)
+        )
+    ),
+
+    cell_size: 1.0,
+    player_spawn: (1, 1),
+    floor: (122, 13, 39),
+    //ceiling: (191, 187, 181)
+    ceiling: (122, 13, 39),
+    shade_ceiling: true,
+    shade_multi: 1.0,
+    shade_walls: true
+)

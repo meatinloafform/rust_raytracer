@@ -1,0 +1,26 @@
+MapFile(
+    map:
+"11111
+00001
+00001
+11001
+11001",
+
+    key: [
+        "one.png"
+    ],
+
+    connections: (
+        left: ( map: "spiral/spiral1.ron", offset: (0, 0) ),
+        down: ( map: "spiral/spiral4.ron", offset: (0, 0) )
+    ),
+
+    cell_size: 1.0,
+    player_spawn: (2, 2),
+    floor: (0, 0, 0),
+    //ceiling: (191, 187, 181)
+    ceiling: (0, 0, 0),
+    shade_ceiling: true,
+    shade_multi: 1.0,
+    shade_walls: true
+)

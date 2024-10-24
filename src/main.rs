@@ -58,7 +58,7 @@ fn main() -> anyhow::Result<()> {
     let texture_creator = canvas.texture_creator();
 
     let mut state = State::new();
-    let mut ui = UI::new(&texture_creator);
+    let mut ui = UI::new(&texture_creator)?;
     state.load_map("res/maps/spiral/spiral0.ron", &texture_creator)?;
 
     let mut player = player::Player::new(state.spawnpoint);
@@ -100,6 +100,8 @@ fn main() -> anyhow::Result<()> {
         if input.get_just_pressed(Keycode::M) {
             state.minimap_enabled = !state.minimap_enabled;
         }
+
+        ui.update(&player);
 
         input.update();
 
@@ -201,6 +203,8 @@ fn main() -> anyhow::Result<()> {
             }
 
         }
+
+        ui.draw(&mut canvas);
 
         canvas.present();
 

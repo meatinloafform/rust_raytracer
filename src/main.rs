@@ -1,14 +1,22 @@
-use std::{f32::consts::PI, fmt::Debug, path::{Path, PathBuf}, rc::Rc, result};
+use std::{cell::RefCell, collections::HashMap, f32::consts::PI, fmt::Debug, path::{Path, PathBuf}, rc::Rc, result, sync::Arc};
 
 use anyhow::{Context, Ok};
+use input::Input;
 use map::{Light, Map, RaycastHit};
+use npc::NPCBehavior;
 use player::Player;
-use sdl2::{image::InitFlag, keyboard::Keycode, pixels::Color, rect::Rect, render::{BlendMode, Canvas, RenderTarget, TextureCreator}, sys::{SDL_Delay, SDL_GetTicks}, video::Window};
+use sdl2::{image::InitFlag, keyboard::Keycode, mouse::MouseButton, pixels::Color, rect::Rect, render::{BlendMode, Canvas, RenderTarget, TextureCreator}, sys::{SDL_Delay, SDL_GetTicks}, video::Window};
+use specs::{Builder, Dispatcher, DispatcherBuilder, World, WorldExt};
+use texture::{AnimationInfo, EntityTexture};
 use ui::UI;
 
 mod ui;
 mod map;
+mod npc;
+mod item;
+mod game;
 mod util;
+mod event;
 mod input;
 mod player;
 mod render;
@@ -60,9 +68,14 @@ fn main() -> anyhow::Result<()> {
     let mut state = State::new();
     let mut ui = UI::new(&texture_creator)?;
     state.load_map("res/maps/spiral/spiral0.ron", &texture_creator)?;
+    npc::Test::create(&mut state, &texture_creator, 2.5, 2.5, 0);
+    // state.add_npc("demon.png".to_string(), &texture_creator, (2.5, 2.5), 0);
 
     let mut player = player::Player::new(state.spawnpoint);
-    let mut input = input::Input::new();
+    // player.position = (10.0, 10.0);
+    let fireball_texture = state.entity_texture(&texture_creator, "projectiles/fireball.png".to_string());
+    player.projectile = fireball_texture;
+    // let mut input = input::Input::new();
 
     let mut events = sdl_context.event_pump().unwrap();
 
@@ -70,19 +83,41 @@ fn main() -> anyhow::Result<()> {
     let mut next_time = unsafe { SDL_GetTicks() } + TICK_INTERVAL;
 
     'mainloop: loop {
-        for event in events.poll_iter() {
-            use sdl2::event::Event;
-            match event {
-                Event::Quit { .. } => break 'mainloop,
-                Event::KeyDown { keycode: Some(keycode), repeat, .. } => {
-                    if !repeat {
-                        input.pressed(keycode);
+        {
+            let input = Arc::get_mut(&mut state.input).expect("hanging reference to input");
+            for event in events.poll_iter() {
+                use sdl2::event::Event;
+                match event {
+                    Event::Quit { .. } => break 'mainloop,
+                    Event::KeyDown { keycode: Some(keycode), repeat, .. } => {
+                        if !repeat {
+                            input.pressed(keycode);
+                        }
+                    },
+                    Event::KeyUp { keycode: Some(keycode), .. } => {
+                        input.released(keycode);
+                    },
+                    Event::MouseMotion { x, y, xrel, yrel, .. } => {
+                        input.mouse_moved((x.max(0) as u32, y.max(0) as u32), (xrel, yrel));
+                    },
+                    Event::MouseButtonDown { mouse_btn, clicks, x, y, .. } => {
+                        match mouse_btn {
+                            MouseButton::Left => input.left_mouse_pressed(),
+                            MouseButton::Middle => input.middle_mouse_pressed(),
+                            MouseButton::Right => input.right_mouse_pressed(),
+                            _ => ()
+                        }
+                    },
+                    Event::MouseButtonUp { mouse_btn, clicks, x, y, .. } => {
+                        match mouse_btn {
+                            MouseButton::Left => input.left_mouse_released(),
+                            MouseButton::Middle => input.middle_mouse_released(),
+                            MouseButton::Right => input.right_mouse_released(),
+                            _ => ()
+                        }
                     }
-                },
-                Event::KeyUp { keycode: Some(keycode), .. } => {
-                    input.released(keycode);
+                    _ => ()
                 }
-                _ => ()
             }
         }
 
@@ -91,19 +126,27 @@ fn main() -> anyhow::Result<()> {
         /////////////////
 
         // Player input
-        player.update(state.loaded_maps[state.current_map].as_ref().unwrap(), &input);
+        player.update(&mut state);
 
-        // Map update
-        state.update(&mut player);
+        ui.update(&player, &state.input);
+        state.update(&mut player, &mut ui);
+        
+        if ui.dialog.unfreeze_player {
+            ui.dialog.unfreeze_player = false;
+            player.can_move = true;
+            state.allow_interaction = true;
+        }
 
         // Toggle minimap
-        if input.get_just_pressed(Keycode::M) {
+        if state.input.get_just_pressed(Keycode::M) {
             state.minimap_enabled = !state.minimap_enabled;
         }
 
-        ui.update(&player);
-
-        input.update();
+        // Capture frame
+        state.capture_frame = false;
+        if state.input.get_just_pressed(Keycode::C) {
+            state.capture_frame = true;
+        }
 
         /////////////////
         // Render
@@ -204,8 +247,14 @@ fn main() -> anyhow::Result<()> {
 
         }
 
-        ui.draw(&mut canvas);
+        /////////////////
+        // UI
+        /////////////////
+        ui.draw(&state.input, &player, &mut canvas);
 
+        if let Some(input) = Arc::get_mut(&mut state.input) {
+            input.update();
+        }
         canvas.present();
 
         // Wait until the next frame
@@ -228,15 +277,74 @@ unsafe fn time_left(next_time: u32) -> u32 {
     }
 }
 
-impl<'a> State<'a> {
+impl<'a, 'b, 'c> State<'a, 'b, 'c> {
     pub fn new() -> Self {
-        Self {
+        let mut world = World::new();
+        world.register::<game::Position>();
+        world.register::<game::Player>();
+        world.register::<game::NPC>();
+        world.register::<game::Sprite>();
+        world.register::<game::AIStyle>();
+        world.register::<game::Interactable>();
+        world.register::<game::Projectile>();
+
+        world.create_entity()
+            .with(game::Position {
+                x: 0.0, y: 0.0, map: 0
+            }).with(game::Player {
+                map: 0
+            })
+            .build();
+
+        world.insert(game::PlayerData {
+            ..Default::default()
+        });
+
+        world.insert(game::SpriteRenderData {
+            ..Default::default()
+        });
+
+        world.insert(game::Time {
+            ..Default::default()
+        });
+
+        world.insert(game::EventBus {
+            events: Vec::new()
+        });
+
+        world.insert(game::Input {
+            input: None
+        });
+
+        let mut dispatcher = DispatcherBuilder::new()
+            .with(game::UpdatePlayer, "update_player", &[])
+            .with(game::AIStep, "ai_step", &[])
+            .with(game::CheckInteractions, "check_interactions", &["update_player", "ai_step"])
+            .with(game::MoveSprites, "move_sprites", &["ai_step"])
+            .with(game::PrepareSprites, "prepare_sprites", &["move_sprites"])
+            .with(game::MoveCollideProjectiles, "move_collide_projectiles", &[])
+            .build();
+
+        let mut state = Self {
             minimap_enabled: false,
             loaded_maps: Vec::new(),
             current_map: 0,
             spawnpoint: (0.0, 0.0),
-            player_light: 0
-        }
+            player_light: 0,
+            world,
+            dispatcher,
+            entity_textures: Vec::new(),
+            input: Arc::new(Input::new()),
+            npcs: Vec::new(),
+            allow_interaction: true,
+            capture_frame: false
+        };
+
+        state
+    }
+
+    fn post_load(&mut self) {
+        self.world.insert(game::Maps::new(self));
     }
 
     pub fn load_map<P: AsRef<Path> + Debug, T>(&mut self, path: P, creator: &'a TextureCreator<T>) -> anyhow::Result<()> {
@@ -252,6 +360,8 @@ impl<'a> State<'a> {
         for map in self.loaded_maps.iter_mut() {
             map.as_mut().unwrap().regenerate_segments();
         }
+
+        self.post_load();
 
         anyhow::Ok(())
     }
@@ -322,7 +432,11 @@ impl<'a> State<'a> {
         anyhow::Ok(index)
     }
 
-    pub fn update(&mut self, player: &mut Player) {
+    pub fn update(&mut self, player: &mut Player, ui: &mut UI) {
+        if ui.dialog.active {
+            self.allow_interaction = false;
+        }
+
         self.loaded_maps[self.current_map].as_mut().unwrap().lights[self.player_light].pos = player.position;
 
         let (width, height, cell_size) = {
@@ -353,6 +467,74 @@ impl<'a> State<'a> {
             let offset = (adj.1.0 as f32 * cell_size, adj.1.1 as f32 * cell_size);
             self.switch_maps(player, adj.0, (player.position.0 - offset.0, player.position.1 - height - offset.1));
         }
+
+        {
+            let mut player_data = self.world.write_resource::<game::PlayerData>();
+            player_data.x = player.position.0;
+            player_data.y = player.position.1;
+            player_data.map = self.current_map;
+        }
+
+        let tick = unsafe {
+            SDL_GetTicks()
+        } as f64 / 1000.0;
+
+        {
+            let mut time = self.world.write_resource::<game::Time>();
+            time.elapsed_time = tick;
+        }
+
+        for i in 0..self.npcs.len() {
+            if self.npcs[i].is_some() {
+                let mut npc = self.npcs[i].take().unwrap();
+                npc.update(self, ui, player);
+                self.npcs[i] = Some(npc);
+            }
+        }
+
+        {
+            let mut input_container = self.world.write_resource::<game::Input>();
+            input_container.input = Some(self.input.clone())
+        }
+
+        self.dispatcher.dispatch(&mut self.world);
+        self.world.maintain();
+
+        {
+            let mut input_container = self.world.write_resource::<game::Input>();
+            input_container.input = None;
+        }
+
+        let events = {
+            self.world.write_resource::<game::EventBus>().events.drain(..).collect::<Vec<_>>()
+        };
+
+        for event in events.into_iter() {
+            use event::Event::*;
+            match event {
+                ShowInteractionPrompt { message, key } => {
+                    ui.interaction_prompt_message = Some((message, key));
+                },
+                Print { message } => {
+                    println!("{}", message);
+                },
+                DoInteraction { npc } => {
+                    if self.allow_interaction {
+                        let mut npc_obj = self.npcs[npc].take().unwrap();
+                        npc_obj.interact(self, ui, player);
+                        self.npcs[npc] = Some(npc_obj);
+                    }
+                },
+                ShowDialog { text } => {
+                    ui.show_dialog(text);
+                    player.can_move = false
+                }
+            }
+        }
+
+        for texture in self.entity_textures.iter() {
+            texture.0.borrow_mut().try_animate();
+        }
     }
 
     pub fn switch_maps(&mut self, player: &mut Player, new_index: usize, new_position: (f32, f32)) {
@@ -369,9 +551,9 @@ impl<'a> State<'a> {
 
         {
             let base_map = map_rcs[self.current_map].clone();
+            let global_billboards = self.world.fetch::<game::SpriteRenderData>();
 
-            // TODO: Move the render code either to a function or to the implementation of Map
-            base_map.render(canvas, player, self.current_map, &map_rcs);
+            base_map.render(canvas, player, self.current_map, &map_rcs, &global_billboards.billboards, &self.entity_textures, &self.world, self.capture_frame);
         }
 
         for (i, rc) in map_rcs.drain(..).enumerate() {
@@ -383,25 +565,69 @@ impl<'a> State<'a> {
         }
     }
 
-    // pub fn add_light(&mut self, light: Light) -> usize {
-    //     for (i, light_slot) in self.lights.iter_mut().enumerate() {
-    //         if light_slot.is_none() {
-    //             *light_slot = Some(light);
-    //             return i;
-    //         }
-    //     }
+    pub fn entity_texture<T>(&mut self, creator: &'a TextureCreator<T>, name: String) -> usize {
+        for (i, texture) in self.entity_textures.iter().enumerate() {
+            if texture.1 == name {
+                return i;
+            }
+        }
 
-    //     self.lights.push(Some(light));
-    //     return self.lights.len() - 1;
-    // }
+        let path = PathBuf::from("res/textures/").join(&name);
+
+        self.entity_textures.push((
+            Rc::new(RefCell::new(EntityTexture::Static(Some(texture::Texture::from_file(path, creator).unwrap())))),
+            name
+        ));
+
+        self.entity_textures.len() - 1
+    }
+
+    pub fn animated_entity_texture<T>(&mut self, creator: &'a TextureCreator<T>, name: String, textures: Vec<String>) -> usize {
+        for (i, texture) in self.entity_textures.iter().enumerate() {
+            if texture.1 == name {
+                return i;
+            }
+        }
+
+        let mut loaded_textures = Vec::new();
+
+        for texture in textures.iter() {
+            let path = PathBuf::from("res/textures/").join(texture);
+            
+            loaded_textures.push(
+                Some(texture::Texture::from_file(path, creator).unwrap())
+            );
+        }
+
+        self.entity_textures.push((
+            Rc::new(RefCell::new(EntityTexture::Animated(loaded_textures, AnimationInfo {
+                frame: 0,
+                frame_count: textures.len()
+            }))),
+            name
+        ));
+
+        self.entity_textures.len() - 1
+    }
 }
 
-struct State<'a> {
+// type NpcTextures<'a> = Vec<(Rc<RefCell<texture::Texture<'a>>>, String)>;
+type SharedEntityTextures<'a> = Vec<(Rc<RefCell<texture::EntityTexture<'a>>>, String)>;
+
+struct State<'a, 'b, 'c> {
     pub minimap_enabled: bool,
     pub loaded_maps: Vec<Option<Map<'a>>>,
     pub current_map: usize,
     pub spawnpoint: (f32, f32),
-    pub player_light: usize
+    pub player_light: usize,
+    pub world: World,
+    pub dispatcher: Dispatcher<'b, 'c>,
+    // pub npc_textures: NpcTextures<'a>,
+    pub entity_textures: SharedEntityTextures<'a>,
+    pub input: Arc<Input>,
+    pub npcs: Vec<Option<Box<dyn NPCBehavior>>>,
+    pub allow_interaction: bool,
+    pub capture_frame: bool
 }
 
 //////////////

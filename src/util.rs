@@ -1,4 +1,4 @@
-use sdl2::{rect::Point, render::{Canvas, RenderTarget}};
+use sdl2::{rect::Point, render::{Canvas, RenderTarget}, sys::{KeyCode, SDL_KeyCode}};
 
 // fn round_up_mult_8(v: i32) -> i32 {
 //     (v + (8 - 1)) & -8

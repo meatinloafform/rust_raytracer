@@ -1,29 +1,111 @@
 use std::{any::Any, collections::HashMap, path::Path, rc::Rc};
 
-use sdl2::{rect::Rect, render::{Canvas, RenderTarget, TextureCreator}};
+use sdl2::{keyboard::Keycode, rect::{Point, Rect}, render::{Canvas, RenderTarget, TextureCreator}};
 
-use crate::{player::Player, texture};
+use crate::{input::Input, player::Player, texture};
+
+pub struct Dialog {
+    pub active: bool,
+    pub message: String,
+    pub show_chars: u32,
+    pub display_speed: u32,
+    pub timer: u32,
+    pub padding: u32,
+    pub unfreeze_player: bool
+}
 
 pub struct UI<'a> {
     pub fonts: FontBank<'a>,
-    pub frames: FrameBank<'a>
+    pub frames: FrameBank<'a>,
+    pub interaction_prompt_message: Option<(String, String)>,
+    pub dialog: Dialog
 }
 
 impl<'a> UI<'a> {
     pub fn new<T>(creator: &'a TextureCreator<T>) -> anyhow::Result<Self> {
         anyhow::Ok(Self {
             fonts: FontBank::load_all(creator)?,
-            frames: FrameBank::load_all(creator)?
+            frames: FrameBank::load_all(creator)?,
+            interaction_prompt_message: None,
+            dialog: Dialog::new()
         })
     }
 
-    pub fn update(&mut self, player: &Player) {
-
+    pub fn update(&mut self, player: &Player, input: &Input) {
+        self.interaction_prompt_message = None;
+        
+        if self.dialog.active {
+            if self.dialog.show_chars < self.dialog.message.len() as u32 {
+                if Self::advance_dialog(input) {
+                    self.dialog.show_chars = self.dialog.message.len() as u32;
+                } else {
+                    if self.dialog.timer == 0 {
+                        self.dialog.show_chars += 1;
+                        self.dialog.timer = self.dialog.display_speed;
+                    } else {
+                        self.dialog.timer -= 1;
+                    }
+                }
+            } else {
+                if self.dialog.show_chars == self.dialog.message.len() as u32 {
+                    if Self::advance_dialog(input) {
+                        self.dialog.active = false;
+                        self.dialog.unfreeze_player = true;
+                    }
+                }
+            }
+        }
     }
 
-    pub fn draw<T: RenderTarget>(&self, canvas: &mut Canvas<T>) {
-        self.frames.test.draw(canvas, 25, 25, 400, 300);
-        self.fonts.textured.draw_string_at(canvas, &String::from("hello, world .! ,,"), 50.0, 50.0);   
+    pub fn draw<T: RenderTarget>(&self, input: &Input, player: &Player, canvas: &mut Canvas<T>) {
+        if let Some(interact) = &self.interaction_prompt_message {
+            self.fonts.textured.draw_string_at(canvas, &interact.0, 50.0, 300.0);
+            self.fonts.textured.draw_string_at(canvas, &interact.1, 200.0, 350.0);
+        }
+
+        if self.dialog.active {
+            let slice = self.dialog.message[0..self.dialog.show_chars as usize].to_owned();
+
+            let mut drawn = Rect::new(0, 0, 1, 1);
+            self.frames.textured.draw(canvas, 50, 300, 600, 180, Some(&mut drawn));
+            self.fonts.textured.draw_multiline_string_at(canvas, &slice, 60.0 + self.dialog.padding as f32, 310.0 + self.dialog.padding as f32, drawn.width() as f32 + 20.0);
+        }
+
+        self.frames.textured.draw(canvas, 10, 10, 32 * 6, 32 * 3, None);
+        self.fonts.textured.draw_string_at(canvas, &format!("Health: {}", player.health), 16.0, 30.0);
+        self.fonts.textured.draw_string_at(canvas, &format!("Magic: {}", player.focus), 16.0, 60.0);
+    }
+
+    fn advance_dialog(input: &Input) -> bool {
+        input.get_just_pressed(Keycode::Return) || input.get_just_pressed(Keycode::E)
+    }
+
+    pub fn button<T: RenderTarget>(canvas: &mut Canvas<T>, input: &Input, x: i32, y: i32, w: u32, h: u32, nine_cell: &NineCell) -> bool {
+        let mut frame = Rect::new(0, 0, 1, 1);
+        nine_cell.draw(canvas, x, y, w, h, Some(&mut frame));
+
+        input.get_left_mouse_just_pressed() && frame.contains_point(Point::new(input.mouse_pos.0 as i32, input.mouse_pos.1 as i32))
+    }
+
+    pub fn show_dialog(&mut self, message: String) {
+        self.dialog.active = true;
+        self.dialog.message = message;
+        self.dialog.show_chars = 0;
+        self.dialog.timer = self.dialog.display_speed;
+    }
+}
+
+impl Dialog {
+    pub fn new() -> Self {
+        Self {
+            active: false,
+            display_speed: 1,
+            message: String::new(),
+            show_chars: 0,
+            timer: 0,
+            padding: 10,
+            unfreeze_player: false
+        }
     }
 }
 
@@ -33,7 +115,9 @@ pub struct FontBank<'a> {
 }
 
 pub struct FrameBank<'a> {
-    test: NineCell<'a>
+    test: NineCell<'a>,
+    pink_frame: NineCell<'a>,
+    textured: NineCell<'a>
 }
 
 const YUME_FONT_STRING: &str = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789 .!,-�?§µ";
@@ -53,7 +137,9 @@ impl<'a> FontBank<'a> {
 impl<'a> FrameBank<'a> {
     pub fn load_all<T>(creator: &'a TextureCreator<T>) -> anyhow::Result<Self> {
         anyhow::Ok(Self {
-            test: NineCell::from_file("res/textures/ui/frames/9cell_test.png", creator, 2.0, [(32, 32); 9])?
+            test: NineCell::from_file("res/textures/ui/frames/9cell_test.png", creator, 1.0, [(32, 32); 9])?,
+            pink_frame: NineCell::from_file("res/textures/ui/frames/pinkframe.png", creator, 1.0, [(16, 16); 9])?,
+            textured: NineCell::from_file("res/textures/ui/frames/textured.png", creator, 2.0, [(16, 16); 9])?
         })
     }
 }
@@ -80,10 +166,32 @@ impl<'a> Font<'a> {
 
     pub fn draw_string_at<T: RenderTarget>(&self, canvas: &mut Canvas<T>, string: &String, x: f32, y: f32) {
         let mut cur_x = x;
+        let mut cur_y = y;
 
         for char in string.chars() {
-            cur_x += (self.char_width as f32 * self.scale) + self.x_padding as f32;
-            self.draw_char_at(canvas, char, cur_x, y);
+            if char == '\n' {
+                cur_x = x;
+                cur_y += (self.char_height as f32 * self.scale) + self.y_padding as f32;
+            } else {
+                cur_x += (self.char_width as f32 * self.scale) + self.x_padding as f32;
+                self.draw_char_at(canvas, char, cur_x, cur_y);
+            }
+        }
+    }
+
+    pub fn draw_multiline_string_at<T: RenderTarget>(&self, canvas: &mut Canvas<T>, string: &String, x: f32, y: f32, width: f32) {
+        let mut cur_x = x;
+        let mut cur_y = y;
+
+        for char in string.chars() {
+            if char == '\n' || cur_x + (self.char_width as f32 * self.scale) + self.x_padding as f32 > width {
+                cur_x = x;
+                cur_y += (self.char_height as f32 * self.scale) + self.y_padding as f32;
+            } else {
+                cur_x += (self.char_width as f32 * self.scale) + self.x_padding as f32;
+            }
+
+            self.draw_char_at(canvas, char, cur_x, cur_y);
         }
     }
 
@@ -148,37 +256,49 @@ impl<'a> NineCell<'a> {
                 })
     }
 
-    pub fn draw<T: RenderTarget>(&self, canvas: &mut Canvas<T>, x: i32, y: i32, w: u32, h: u32) {
+    /// Draw the nine-cell, with an optional `rect` that the drawn size will be written to if present
+    pub fn draw<T: RenderTarget>(&self, canvas: &mut Canvas<T>, x: i32, y: i32, w: u32, h: u32, rect: Option<&mut Rect>) {
         let mut mid_width = w - (2 * (self.tl.w as f32 * self.scale) as u32).min(w);
         let mid_x_count = mid_width / scaled_x(self.tl, self.scale);
         mid_width = mid_x_count * scaled_x(self.tl, self.scale);
 
         let mut mid_height = h - (2 * (self.tl.h as f32 * self.scale) as u32).min(h);
-        println!("{}", mid_height);
         let mid_y_count = mid_height / scaled_y(self.tl, self.scale);
         mid_height = mid_y_count * scaled_y(self.tl, self.scale);
 
+        if let Some(rect) = rect {
+            *rect = Rect::new(x, y, mid_width + (2 * (self.tl.w as f32 * self.scale) as u32).min(w), mid_height + (2 * (self.tl.h as f32 * self.scale) as u32).min(h));
+        }
+
+        // Top left
         canvas.copy(
             &self.image.inner, 
             self.tl, 
             Rect::new(x, y, (self.tl.w as f32 * self.scale) as u32, (self.tl.h as f32 * self.scale) as u32)
         ).unwrap();
+
+        // Top right
         canvas.copy(
             &self.image.inner, 
             self.tr, 
             Rect::new(x + (self.tl.w as f32 * self.scale) as i32 + mid_width as i32, y, (self.tr.w as f32 * self.scale) as u32, (self.tr.h as f32 * self.scale) as u32)
         ).unwrap();
+
+        // Bottom left
         canvas.copy(
             &self.image.inner,
             self.bl,
             Rect::new(x, y + (self.tl.h as f32 * self.scale) as i32 + mid_height as i32, scaled_x(self.bl, self.scale), scaled_y(self.bl, self.scale))
         ).unwrap();
+
+        // Bottom right
         canvas.copy(
             &self.image.inner,
             self.br,
             Rect::new(x + (self.tl.w as f32 * self.scale) as i32 + mid_width as i32, y + (self.tl.h as f32 * self.scale) as i32 + mid_height as i32, scaled_x(self.br, self.scale), scaled_y(self.br, self.scale))
         ).unwrap();
 
+        // Top and bottom
         let mut pos_x = x + (self.tl.w as f32 * self.scale) as i32;
         for _ in 0..mid_x_count {
             canvas.copy(
@@ -196,6 +316,7 @@ impl<'a> NineCell<'a> {
             pos_x += scaled_x(self.cu, self.scale) as i32
         }
 
+        // Left and right
         let mut pos_y = y + (self.tl.h as f32 * self.scale) as i32;
         for _ in 0..mid_y_count {
             canvas.copy(
@@ -213,9 +334,10 @@ impl<'a> NineCell<'a> {
             pos_y += scaled_y(self.cl, self.scale) as i32;
         }
 
-        pos_y = y + (self.tl.h as f32 * self.scale) as i32;//  + scaled_y(self.tl, self.scale) as i32;
+        // Middle
+        pos_y = y + (self.tl.h as f32 * self.scale) as i32;
         for _ in 0..mid_y_count {
-            pos_x = x + (self.tl.w as f32 * self.scale) as i32; // + scaled_x(self.tl, self.scale) as i32;
+            pos_x = x + (self.tl.w as f32 * self.scale) as i32;
             for _ in 0..mid_x_count {
                 canvas.copy(
                     &self.image.inner,

@@ -134,6 +134,11 @@ pub struct Billboard {
     pub height: f32
 }
 
+pub struct GlobalBillboard {
+    pub billboard: Billboard,
+    pub map: usize
+}
+
 /// Information about a wall hit during raycast
 #[derive(Debug)]
 pub struct HitWall {
@@ -163,7 +168,8 @@ pub struct HitEdge {
 pub struct HitBillboard {
     pub billboard_index: usize,
     pub u: f32,
-    pub pos: (f32, f32)
+    pub pos: (f32, f32),
+    pub global: bool
 }
 
 /// Information about a raycast hit
@@ -219,6 +225,33 @@ impl AdjacentMaps {
 }
 
 const EPSILON: f32 = 1e-5;
+
+fn handle_billboard(
+    dir_x: f32, dir_y: f32, billboard: &Billboard, 
+    l0: (f32, f32), l1: (f32, f32), x: f32, y: f32, hits: &mut Vec<RaycastResult>,
+    i: usize, map_index: usize, last_map: &Option<usize>,
+    maps_list: &Vec<Rc<Map>>, distance_travelled: f32,
+    global: bool
+) {
+    let bl0 = (-dir_y * (billboard.width / 2.0) + billboard.origin.0,  dir_x * (billboard.width / 2.0) + billboard.origin.1);
+    let bl1 = ( dir_y * (billboard.width / 2.0) + billboard.origin.0, -dir_x * (billboard.width / 2.0) + billboard.origin.1);
+
+    if let Some((lx, ly, s, _)) = collision::get_line_intersection(
+        l0.0, l0.1, l1.0, l1.1,
+        bl0.0, bl0.1, bl1.0, bl1.1
+    ) {
+        hits.push(RaycastResult { hit: RaycastHit::Billboard(HitBillboard {
+                billboard_index: i,
+                pos: (lx, ly),
+                u: s,
+                global
+            }),
+            light: Map::get_light_mod(lx - (dir_x * 0.05), ly - (dir_y * 0.05), map_index, last_map, maps_list),
+            distance: ((lx - x).powf(2.0) + (ly - y).powf(2.0)).sqrt() + distance_travelled,
+            map: map_index
+        });
+    }
+}
 
 impl<'a> Map<'a> {
     pub fn new(width: u32, height: u32, cell_size: f32) -> Self {
@@ -573,15 +606,15 @@ impl<'a> Map<'a> {
     pub fn cast_ray(
         &self, x: f32, y: f32, dir_x: f32, dir_y: f32, 
         distance_travelled: f32, map_index: usize, last_map: &Option<usize>,
-        maps_list: &Vec<Rc<Map>>
+        maps_list: &Vec<Rc<Map>>, global_billboards: &Vec<GlobalBillboard>
     ) -> Vec<RaycastResult> {
         let (mut tile_x, dtile_x, mut dt_x, ddt_x) = raycast_helpers(self.cell_size, x, dir_x);
         let (mut tile_y, dtile_y, mut dt_y, ddt_y) = raycast_helpers(self.cell_size, y, dir_y);
 
         let mut t = 0.0;
 
-        let mut cur_x: f32 = 0.0;
-        let mut cur_y: f32 = 0.0;
+        let mut cur_x: f32 = x;
+        let mut cur_y: f32 = y;
         let mut was_y = dt_y < dt_x;
 
         let mut hits = Vec::new();
@@ -638,7 +671,7 @@ impl<'a> Map<'a> {
                     was_y = true;
                 }
 
-                let l0 = (x, y);
+                let l0 = (cur_x, cur_y);
 
                 cur_x = x + dir_x * t;
                 cur_y = y + dir_y * t;
@@ -664,22 +697,11 @@ impl<'a> Map<'a> {
                 }
 
                 for (i, billboard) in self.billboards.iter().enumerate() {
-                    let bl0 = (-dir_y * (billboard.width / 2.0) + billboard.origin.0,  dir_x * (billboard.width / 2.0) + billboard.origin.1);
-                    let bl1 = ( dir_y * (billboard.width / 2.0) + billboard.origin.0, -dir_x * (billboard.width / 2.0) + billboard.origin.1);
-
-                    if let Some((lx, ly, s, _)) = collision::get_line_intersection(
-                        l0.0, l0.1, l1.0, l1.1,
-                        bl0.0, bl0.1, bl1.0, bl1.1
-                    ) {
-                        hits.push(RaycastResult { hit: RaycastHit::Billboard(HitBillboard {
-                                billboard_index: i,
-                                pos: (lx, ly),
-                                u: s
-                            }),
-                            light: Self::get_light_mod(lx - (dir_x * 0.05), ly - (dir_y * 0.05), map_index, last_map, maps_list),
-                            distance: ((lx - x).powf(2.0) + (ly - y).powf(2.0)).sqrt() + distance_travelled,
-                            map: map_index
-                        });
+                    handle_billboard(dir_x, dir_y, billboard, l0, l1, x, y, &mut hits, i, map_index, last_map, maps_list, distance_travelled, false);
+                }
+                for (i, billboard) in global_billboards.iter().enumerate() {
+                    if billboard.map == map_index {
+                        handle_billboard(dir_x, dir_y, &billboard.billboard, l0, l1, x, y, &mut hits, i, map_index, last_map, maps_list, distance_travelled, true);
                     }
                 }
             }
@@ -717,7 +739,7 @@ impl<'a> Map<'a> {
                 EdgeRayMove::Keep => cur_y - offset.1,
                 EdgeRayMove::Edge => ((map.height - 1) as f32 * map.cell_size) - 0.01
             };
-            hits.append(&mut map.cast_ray(new_x, new_y, dir_x, dir_y, distance_travelled + distance, boundary, &Some(map_index), maps_list));
+            hits.append(&mut map.cast_ray(new_x, new_y, dir_x, dir_y, distance_travelled + distance, boundary, &Some(map_index), maps_list, global_billboards));
         } else {
             hits.push(RaycastResult { 
                 hit: RaycastHit::Edge(HitEdge {

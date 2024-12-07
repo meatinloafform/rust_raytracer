@@ -71,3 +71,70 @@ impl<'a> Texture<'a> {
         self.inner.alpha_mod()
     }
 }
+
+pub enum EntityTexture<'a> {
+    Static(Option<Texture<'a>>),
+    Animated(Vec<Option<Texture<'a>>>, AnimationInfo)
+}
+
+impl<'a> EntityTexture<'a> {
+    // pub fn get_texture(&self) -> &Texture {
+    //     match self {
+    //         Self::Static(t) => t,
+    //         Self::Animated(textures, info) => {
+    //             &textures[info.frame]
+    //         }
+    //     }
+    // }
+
+    // pub fn get_texture_mut(&mut self) -> &mut Texture {
+    //     match self {
+    //         Self::Static(ref mut t) => t,
+    //         Self::Animated(textures, info) => {
+    //             &mut textures[info.frame]
+    //         }
+    //     }
+    // }
+
+    pub fn take_texture(&mut self) -> Texture<'a> {
+        match self {
+            Self::Static(t) => t.take().unwrap(),
+            Self::Animated(textures, info) => {
+                textures[info.frame].take().unwrap()
+            }
+        }
+    }
+
+    pub fn return_texture(&mut self, texture: Texture<'a>) {
+        match self {
+            Self::Static(t) => *t = Some(texture),
+            Self::Animated(textures, info) => {
+                textures[info.frame] = Some(texture)
+            }
+        }
+    }
+
+    pub fn try_animate(&mut self) {
+        match self {
+            Self::Animated(_, info) => {
+                info.advance();
+            },
+            _ => ()
+        }
+    }
+}
+
+pub struct AnimationInfo {
+    pub frame: usize,
+    pub frame_count: usize
+}
+
+impl AnimationInfo {
+    pub fn advance(&mut self) {
+        self.frame += 1;
+
+        if self.frame >= self.frame_count {
+            self.frame = 0;
+        }
+    }
+}

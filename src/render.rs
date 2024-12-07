@@ -1,11 +1,12 @@
 use std::rc::Rc;
 
-use sdl2::{pixels::Color, rect::Rect, render::{Canvas, RenderTarget}, video::Window};
+use sdl2::{pixels::Color, rect::Rect, render::Canvas, video::Window};
+use specs::{World, WorldExt};
 
-use crate::{map::{self, Map, RaycastHit}, player::Player, texture};
+use crate::{game::SpriteRenderData, map::{self, GlobalBillboard, Map, RaycastHit}, player::Player, SharedEntityTextures};
 
 impl<'a> map::Map<'a> {
-    pub fn render(&self, canvas: &mut Canvas<Window>, player: &mut Player, map_index: usize, maps: &Vec<Rc<Map>>) {
+    pub fn render(&self, canvas: &mut Canvas<Window>, player: &mut Player, map_index: usize, maps: &Vec<Rc<Map>>, global_billboards: &Vec<GlobalBillboard>, npc_textures: &SharedEntityTextures, world: &World, capture_frame: bool) {
         let (width, height) = canvas.window().size();
 
         // Ceiling and floor
@@ -32,6 +33,8 @@ impl<'a> map::Map<'a> {
 
         let center = (height as f32) / 2.0;
 
+        let sprite_render_data = world.read_resource::<SpriteRenderData>();
+
         for col in 0..width {
             let angle = (player.facing - player.fov / 2.0) + (col as f32 / width as f32) * player.fov;
 
@@ -43,8 +46,15 @@ impl<'a> map::Map<'a> {
                 0.0,
                 map_index,
                 &None,
-                maps
+                maps,
+                &sprite_render_data.billboards
             );
+
+            if col == width / 2 && capture_frame {
+                for (i, hit) in raycast_result.iter().rev().enumerate() {
+                    println!("Hit {}: {:?}", i, hit);
+                }
+            }
 
             for result in raycast_result.iter().rev() {
                 match &result.hit {
@@ -173,35 +183,51 @@ impl<'a> map::Map<'a> {
                             (height as f32 / distance).max(0.0).min(height as f32) as u32
                         };
 
-                        let index = self.billboards[hit_billboard.billboard_index].texture;
-                        let (texture_width, texture_height, color_mod) = {
-                            let texture = self.billboard_textures[index].0.borrow();
-                            (texture.width, texture.height, texture.color_mod())
-                        };
-                        // let texture = &self.billboard_textures[self.billboards[hit_billboard.billboard_index].texture].0;
+                        if !hit_billboard.global {
+                            let index = self.billboards[hit_billboard.billboard_index].texture;
+                            let (texture_width, texture_height, color_mod) = {
+                                let texture = self.billboard_textures[index].0.borrow();
+                                (texture.width, texture.height, texture.color_mod())
+                            };
 
-                        assert!(line_height <= height);
+                            assert!(line_height <= height);
 
-                        line_height = (line_height as f32 * self.billboards[hit_billboard.billboard_index].height) as u32;
-                        let start = (center - line_height as f32 / 2.0) as i32 - (line_height as f32 * self.billboards[hit_billboard.billboard_index].y) as i32;
-                        let src = Rect::new((texture_width as f32 * hit_billboard.u) as i32, 0, 1, texture_height);
-                        let dst = Rect::new(col as i32, start, 1, line_height);
+                            line_height = (line_height as f32 * self.billboards[hit_billboard.billboard_index].height) as u32;
+                            let start = (center - line_height as f32 / 2.0) as i32 - (line_height as f32 * self.billboards[hit_billboard.billboard_index].y) as i32;
+                            let src = Rect::new((texture_width as f32 * hit_billboard.u) as i32, 0, 1, texture_height);
+                            let dst = Rect::new(col as i32, start, 1, line_height);
 
-                        // let color_mod = texture.color_mod();
-                        // texture.set_color_mod(((color_mod.0 as f32 * shade_amt) as u8, (color_mod.1 as f32 * shade_amt) as u8, (color_mod.2 as f32 * shade_amt) as u8));
-                        // canvas.copy(&texture.inner, src, dst).unwrap();
-                        // texture.set_color_mod(color_mod);
+                            // TODO: ???? this is wrong i think
+                            let original = if self.effects.shade_walls {
+                                Some(self.with_billboard_texture_color(((color_mod.0 as f32 * result.light.0) as u8, (color_mod.1 as f32 * result.light.1) as u8, (color_mod.2 as f32 * result.light.2) as u8), index))
+                            } else {
+                                None
+                            };
 
-                        let original = if self.effects.shade_walls {
-                            Some(self.with_billboard_texture_color(((color_mod.0 as f32 * result.light.0) as u8, (color_mod.1 as f32 * result.light.1) as u8, (color_mod.2 as f32 * result.light.2) as u8), index))
+                            canvas.copy(&self.billboard_textures[index].0.borrow().inner, src, dst).unwrap();
+                            
+                            if let Some(original) = original {
+                                self.with_billboard_texture_color(original, index);
+                            }
                         } else {
-                            None
-                        };
+                            let index = global_billboards[hit_billboard.billboard_index].billboard.texture;
+                            let mut texture_ref = npc_textures[index].0.borrow_mut();
+                            let mut texture = texture_ref.take_texture();
 
-                        canvas.copy(&self.billboard_textures[index].0.borrow().inner, src, dst).unwrap();
-                        
-                        if let Some(original) = original {
-                            self.with_billboard_texture_color(original, index);
+                            line_height = (line_height as f32 * global_billboards[hit_billboard.billboard_index].billboard.height) as u32;
+                            let start = (center - line_height as f32 / 2.0) as i32 - (line_height as f32 * global_billboards[hit_billboard.billboard_index].billboard.y) as i32;
+                            let src = Rect::new((texture.width as f32 * hit_billboard.u) as i32, 0, 1, texture.height);
+                            let dst = Rect::new(col as i32, start, 1, line_height);
+
+                            let original = texture.color_mod();
+                            texture.set_color_mod(((original.0 as f32 * result.light.0) as u8, (original.1 as f32 * result.light.1) as u8, (original.2 as f32 * result.light.2) as u8));
+
+                            canvas.copy(&texture.inner, src, dst).unwrap();
+
+                            texture.set_color_mod(original);
+                            drop(texture_ref);
+
+                            npc_textures[index].0.borrow_mut().return_texture(texture);
                         }
                     }
                 }
